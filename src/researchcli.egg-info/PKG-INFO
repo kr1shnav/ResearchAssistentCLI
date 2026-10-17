@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: researchcli
+Version: 0.1.0
+Summary: A CLI research assistant for learning LLM APIs
+Requires-Python: >=3.10
+Requires-Dist: google-genai
+Requires-Dist: python-dotenv
+Requires-Dist: typer
+Requires-Dist: rich

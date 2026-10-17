@@ -1,0 +1,11 @@
+pyproject.toml
+src/researchcli/__init__.py
+src/researchcli/cli.py
+src/researchcli/config.py
+src/researchcli/llm_client.py
+src/researchcli.egg-info/PKG-INFO
+src/researchcli.egg-info/SOURCES.txt
+src/researchcli.egg-info/dependency_links.txt
+src/researchcli.egg-info/entry_points.txt
+src/researchcli.egg-info/requires.txt
+src/researchcli.egg-info/top_level.txt
