@@ -1,84 +1,40 @@
-import time
-from dataclasses import dataclass
-from typing import Optional
+from collections.abc import Iterator
 
 from google import genai
+from google.genai import types
 
 from researchcli.config import load_settings
 
 
-@dataclass(frozen=True)
-class LLMResult:
-    text: str
-    model: str
-    latency_seconds: float
-    input_tokens: Optional[int]
-    output_tokens: Optional[int]
-    total_tokens: Optional[int]
-    finish_reason: Optional[str]
-
-
-def generate_response(prompt: str) -> LLMResult:
+def create_client() -> genai.Client:
+    """Create a Gemini client with bounded retries."""
     settings = load_settings()
-    client = genai.Client(api_key=settings.api_key)
 
-    try:
-        start = time.perf_counter()
-
-        response = client.models.generate_content(
-            model=settings.model,
-            contents=prompt,
-        )
-
-        latency = time.perf_counter() - start
-
-        usage = response.usage_metadata
-        candidates = response.candidates or []
-
-        finish_reason = None
-        if candidates and candidates[0].finish_reason is not None:
-            finish_reason = str(candidates[0].finish_reason)
-
-        if not response.text:
-            raise RuntimeError(
-                f"Gemini returned no text. Finish reason: {finish_reason}"
+    return genai.Client(
+        api_key=settings.api_key,
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(
+                attempts=4,
+                initial_delay=1.0,
+                max_delay=8.0,
+                exp_base=2.0,
+                jitter=1.0,
+                http_status_codes=[
+                    408, 429, 500, 502, 503, 504
+                ],
             )
+        ),
+    )
 
-        return LLMResult(
-            text=response.text,
-            model=getattr(response, "model_version", None)
-            or settings.model,
-            latency_seconds=latency,
-            input_tokens=(
-                getattr(usage, "prompt_token_count", None)
-                if usage else None
-            ),
-            output_tokens=(
-                getattr(usage, "candidates_token_count", None)
-                if usage else None
-            ),
-            total_tokens=(
-                getattr(usage, "total_token_count", None)
-                if usage else None
-            ),
-            finish_reason=finish_reason,
-        )
 
-    finally:
-        client.close()
-
-def stream_response(prompt: str):
-    """Yield Gemini response chunks as they arrive."""
-    settings = load_settings()
-    client = genai.Client(api_key=settings.api_key)
+def stream_response(prompt: str) -> Iterator:
+    """Yield response chunks from Gemini."""
+    client = create_client()
 
     try:
-        stream = client.models.generate_content_stream(
-            model=settings.model,
+        yield from client.models.generate_content_stream(
+            model=load_settings().model,
             contents=prompt,
         )
-
-        yield from stream
-
     finally:
         client.close()

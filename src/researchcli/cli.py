@@ -5,6 +5,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
+from google.genai import errors
 
 from researchcli.config import load_settings
 from researchcli.llm_client import stream_response
@@ -22,6 +23,33 @@ console = Console()
 def main() -> None:
     """ResearchCLI: a Gemini-powered research assistant."""
     pass
+
+def display_api_error(exc: Exception) -> None:
+    """Show actionable messages for common Gemini API errors."""
+    if isinstance(exc, errors.APIError):
+        code = exc.code
+
+        if code == 400:
+            message = "Invalid request. Check your prompt and model settings."
+        elif code == 401:
+            message = "Authentication failed. Check your Gemini API key."
+        elif code == 403:
+            message = "Access denied. Check your API key and permissions."
+        elif code == 404:
+            message = "Model or API endpoint not found. Check GEMINI_MODEL."
+        elif code == 429:
+            message = "Rate limit or quota exceeded. Check your Gemini usage limits."
+        elif code in (500, 502, 503, 504):
+            message = "Gemini is temporarily unavailable. Try again later."
+        else:
+            message = f"Gemini API returned HTTP {code}."
+
+        console.print(f"[red]{message}[/red]")
+        console.print(f"[dim]Details: {exc.message or str(exc)}[/dim]")
+    else:
+        console.print(
+            f"[red]Request failed: {type(exc).__name__}: {exc}[/red]"
+        )
 
 
 @app.command()
@@ -147,10 +175,7 @@ def stream(
         raise typer.Exit(code=1) from exc
 
     except Exception as exc:
-        console.print(
-            f"[red]Request failed:[/red] "
-            f"{type(exc).__name__}: {exc}"
-        )
+        display_api_error(exc)
         raise typer.Exit(code=1) from exc
 
 
