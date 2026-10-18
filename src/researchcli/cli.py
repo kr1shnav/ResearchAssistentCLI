@@ -1,11 +1,11 @@
 import time
 
 import typer
+from google.genai import errors
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from google.genai import errors
 
 from researchcli.config import load_settings
 from researchcli.llm_client import stream_response
@@ -47,11 +47,61 @@ def display_api_error(exc: Exception) -> None:
         console.print(
             f"[red]{messages.get(code, f'Gemini API error: HTTP {code}')}[/red]"
         )
-        console.print(f"[dim]{exc.message or str(exc)}[/dim]")
+
+        details = getattr(exc, "message", None)
+        if details:
+            console.print(f"[dim]Details: {details}[/dim]")
     else:
         console.print(
             f"[red]Request failed: {type(exc).__name__}: {exc}[/red]"
         )
+
+
+def collect_sources(candidates: list) -> dict[str, str]:
+    """Extract unique web source URLs from Gemini grounding metadata."""
+    sources: dict[str, str] = {}
+
+    for candidate in candidates:
+        grounding = getattr(candidate, "grounding_metadata", None)
+
+        if not grounding:
+            continue
+
+        for item in getattr(grounding, "grounding_chunks", None) or []:
+            web_source = getattr(item, "web", None)
+
+            if not web_source:
+                continue
+
+            url = getattr(web_source, "uri", None)
+            title = getattr(web_source, "title", None)
+
+            if url:
+                sources[url] = title or url
+
+    return sources
+
+
+def append_sources(report: str, sources: dict[str, str]) -> str:
+    """Append a Markdown source list to the report."""
+    if not sources:
+        return (
+            report
+            + "\n\n## Sources\n\n"
+            + "No source URLs were returned in the grounding metadata. "
+            + "Verify claims independently before relying on this report.\n"
+        )
+
+    lines = ["", "## Sources", ""]
+
+    for index, (url, title) in enumerate(sources.items(), start=1):
+        # Escape Markdown label delimiters in source titles.
+        safe_title = title.replace("\\", "\\\\")
+        safe_title = safe_title.replace("[", "\\[").replace("]", "\\]")
+
+        lines.append(f"{index}. [{safe_title}](<{url}>)")
+
+    return report + "\n" + "\n".join(lines) + "\n"
 
 
 @app.command()
@@ -61,11 +111,13 @@ def stream(
         help="The topic you want to research.",
     ),
 ) -> None:
-    """Generate and save a structured research report."""
+    """Research a topic using Gemini and Google Search."""
     start = time.perf_counter()
     first_text_time = None
 
-    output_chunks = []
+    output_chunks: list[str] = []
+    sources: dict[str, str] = {}
+
     input_tokens = None
     output_tokens = None
     total_tokens = None
@@ -82,7 +134,7 @@ def stream(
         )
         console.print(f"[bold]Topic:[/bold] {topic}\n")
 
-        with console.status("[bold cyan]Researching topic..."):
+        with console.status("[bold cyan]Researching with Google Search..."):
             for chunk in stream_response(prompt):
                 chunk_text = chunk.text
 
@@ -92,6 +144,7 @@ def stream(
 
                     output_chunks.append(chunk_text)
 
+                # Capture usage metadata when provided.
                 usage = getattr(chunk, "usage_metadata", None)
 
                 if usage is not None:
@@ -105,10 +158,16 @@ def stream(
                         usage, "total_token_count", total_tokens
                     )
 
+                # Capture grounding sources and completion metadata.
                 candidates = getattr(chunk, "candidates", None) or []
 
-                if candidates and candidates[0].finish_reason is not None:
-                    finish_reason = str(candidates[0].finish_reason)
+                if candidates:
+                    sources.update(collect_sources(candidates))
+
+                    for candidate in candidates:
+                        reason = getattr(candidate, "finish_reason", None)
+                        if reason is not None:
+                            finish_reason = str(reason)
 
                 model_used = (
                     getattr(chunk, "model_version", None) or model_used
@@ -121,7 +180,9 @@ def stream(
             console.print("[yellow]Gemini returned no report text.[/yellow]")
             raise typer.Exit(code=1)
 
-        # Render the completed Markdown for readable terminal output.
+        report = append_sources(report, sources)
+
+        # Render complete Markdown to avoid broken formatting during streaming.
         console.print(
             Panel(
                 Markdown(report),
@@ -131,7 +192,7 @@ def stream(
             )
         )
 
-        # Save the report locally.
+        # Save the report, including source URLs.
         try:
             report_path = save_report(topic, report)
             console.print(
@@ -142,6 +203,7 @@ def stream(
                 f"\n[yellow]Could not save report:[/yellow] {exc}"
             )
 
+        # Display API metrics.
         ttft = (
             first_text_time - start
             if first_text_time is not None
@@ -171,13 +233,15 @@ def stream(
         metrics.add_row(
             "Output tokens",
             str(output_tokens)
-            if output_tokens is not None else "Unavailable",
+            if output_tokens is not None
+            else "Unavailable",
         )
         metrics.add_row(
             "Total tokens",
             str(total_tokens) if total_tokens is not None else "Unavailable",
         )
         metrics.add_row("Finish reason", finish_reason or "Unavailable")
+        metrics.add_row("Sources collected", str(len(sources)))
         metrics.add_row(
             "Output tokens / second",
             f"{throughput:.2f}" if throughput is not None else "Unavailable",

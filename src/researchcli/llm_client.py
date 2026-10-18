@@ -28,13 +28,23 @@ def create_client() -> genai.Client:
 
 
 def stream_response(prompt: str) -> Iterator:
-    """Yield response chunks from Gemini."""
+    """Stream Gemini responses grounded with Google Search."""
+    settings = load_settings()
     client = create_client()
+
+    search_tool = types.Tool(
+        google_search=types.GoogleSearch()
+    )
+
+    config = types.GenerateContentConfig(
+        tools=[search_tool],
+    )
 
     try:
         yield from client.models.generate_content_stream(
-            model=load_settings().model,
+            model=settings.model,
             contents=prompt,
+            config=config,
         )
     finally:
         client.close()
