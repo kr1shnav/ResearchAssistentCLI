@@ -9,6 +9,8 @@ from google.genai import errors
 
 from researchcli.config import load_settings
 from researchcli.llm_client import stream_response
+from researchcli.prompts import build_research_prompt
+from researchcli.storage import save_report
 
 app = typer.Typer(
     name="research",
@@ -24,28 +26,28 @@ def main() -> None:
     """ResearchCLI: a Gemini-powered research assistant."""
     pass
 
+
 def display_api_error(exc: Exception) -> None:
-    """Show actionable messages for common Gemini API errors."""
+    """Display actionable Gemini API error messages."""
     if isinstance(exc, errors.APIError):
         code = exc.code
 
-        if code == 400:
-            message = "Invalid request. Check your prompt and model settings."
-        elif code == 401:
-            message = "Authentication failed. Check your Gemini API key."
-        elif code == 403:
-            message = "Access denied. Check your API key and permissions."
-        elif code == 404:
-            message = "Model or API endpoint not found. Check GEMINI_MODEL."
-        elif code == 429:
-            message = "Rate limit or quota exceeded. Check your Gemini usage limits."
-        elif code in (500, 502, 503, 504):
-            message = "Gemini is temporarily unavailable. Try again later."
-        else:
-            message = f"Gemini API returned HTTP {code}."
+        messages = {
+            400: "Invalid request. Check the prompt and model settings.",
+            401: "Authentication failed. Check your Gemini API key.",
+            403: "Access denied. Check your API key and permissions.",
+            404: "Model or API endpoint not found. Check GEMINI_MODEL.",
+            429: "Rate limit or quota exceeded. Check your Gemini usage.",
+            500: "Gemini server error. Try again later.",
+            502: "Gemini gateway error. Try again later.",
+            503: "Gemini is temporarily unavailable.",
+            504: "Gemini request timed out.",
+        }
 
-        console.print(f"[red]{message}[/red]")
-        console.print(f"[dim]Details: {exc.message or str(exc)}[/dim]")
+        console.print(
+            f"[red]{messages.get(code, f'Gemini API error: HTTP {code}')}[/red]"
+        )
+        console.print(f"[dim]{exc.message or str(exc)}[/dim]")
     else:
         console.print(
             f"[red]Request failed: {type(exc).__name__}: {exc}[/red]"
@@ -54,12 +56,12 @@ def display_api_error(exc: Exception) -> None:
 
 @app.command()
 def stream(
-    question: str = typer.Argument(
+    topic: str = typer.Argument(
         ...,
-        help="The question you want to research.",
+        help="The topic you want to research.",
     ),
 ) -> None:
-    """Stream Gemini responses and display readable Markdown."""
+    """Generate and save a structured research report."""
     start = time.perf_counter()
     first_text_time = None
 
@@ -72,13 +74,16 @@ def stream(
 
     try:
         settings = load_settings()
-        console.print(
-            f"[bold cyan]ResearchCLI[/bold cyan] "
-            f"[dim]({settings.model})[/dim]\n"
-        )
+        prompt = build_research_prompt(topic)
 
-        with console.status("[bold cyan]Researching..."):
-            for chunk in stream_response(question):
+        console.print(
+            f"\n[bold cyan]ResearchCLI[/bold cyan] "
+            f"[dim]({settings.model})[/dim]"
+        )
+        console.print(f"[bold]Topic:[/bold] {topic}\n")
+
+        with console.status("[bold cyan]Researching topic..."):
+            for chunk in stream_response(prompt):
                 chunk_text = chunk.text
 
                 if chunk_text:
@@ -110,22 +115,32 @@ def stream(
                 )
 
         elapsed = time.perf_counter() - start
-        answer = "".join(output_chunks)
+        report = "".join(output_chunks).strip()
 
-        if not answer.strip():
-            console.print(
-                "[yellow]Gemini returned no text.[/yellow]"
-            )
-            return
+        if not report:
+            console.print("[yellow]Gemini returned no report text.[/yellow]")
+            raise typer.Exit(code=1)
 
+        # Render the completed Markdown for readable terminal output.
         console.print(
             Panel(
-                Markdown(answer),
+                Markdown(report),
                 title="Research Report",
                 border_style="cyan",
                 padding=(1, 2),
             )
         )
+
+        # Save the report locally.
+        try:
+            report_path = save_report(topic, report)
+            console.print(
+                f"\n[green]Report saved:[/green] {report_path.resolve()}"
+            )
+        except OSError as exc:
+            console.print(
+                f"\n[yellow]Could not save report:[/yellow] {exc}"
+            )
 
         ttft = (
             first_text_time - start
@@ -144,7 +159,7 @@ def stream(
         metrics.add_column("Value", style="green")
 
         metrics.add_row("Model", model_used or settings.model)
-        metrics.add_row("Total elapsed", f"{elapsed:.2f} seconds")
+        metrics.add_row("Elapsed time", f"{elapsed:.2f} seconds")
         metrics.add_row(
             "Time to first text",
             f"{ttft:.2f} seconds" if ttft is not None else "Unavailable",
@@ -171,8 +186,11 @@ def stream(
         console.print(metrics)
 
     except ValueError as exc:
-        console.print(f"[red]Configuration error:[/red] {exc}")
+        console.print(f"[red]Configuration or input error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+    except typer.Exit:
+        raise
 
     except Exception as exc:
         display_api_error(exc)
