@@ -66,3 +66,19 @@ def generate_response(prompt: str) -> LLMResult:
 
     finally:
         client.close()
+
+def stream_response(prompt: str):
+    """Yield Gemini response chunks as they arrive."""
+    settings = load_settings()
+    client = genai.Client(api_key=settings.api_key)
+
+    try:
+        stream = client.models.generate_content_stream(
+            model=settings.model,
+            contents=prompt,
+        )
+
+        yield from stream
+
+    finally:
+        client.close()
